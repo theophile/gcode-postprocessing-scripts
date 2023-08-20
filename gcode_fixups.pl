@@ -10,11 +10,12 @@ while ( my $line = <> ) {
     $line =~ tr/\#//d if ( $line =~ m/\bFILAMENT_COLOR_HEX\b/ );
 
     # If line contains a Z parameter, save the value
-    $z = $1 if $line =~ m/Z\s*(\d+(\.\d+)?)/;
+    $z = $1 if $line =~ m/^G1.*Z\s*(\d*(\.\d+)?)/;
 
     # If the line starts with the FILAMENT_CHANGE macro, look ahead
     # until we find a travel move, then store the X and Y parameters
     # so we can tell the FILAMENT_CHANGE macro where we'll be going
+    
     if ( $line =~ m/^FILAMENT_CHANGE/ ) {
         my @inner_lines = ();
         my ( $x, $y, $f ) = ( '', '', '' );
@@ -42,4 +43,5 @@ while ( my $line = <> ) {
     else {
         print $line or die $!;
     }
+   
 }
