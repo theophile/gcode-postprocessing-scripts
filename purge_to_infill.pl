@@ -36,6 +36,40 @@ seek( $in, 0, 0 );
 my @lines = <$in>;
 close $in;
 
+my %entity_roles = (
+    'Gap fill'                   => 'follow',
+    'Ironing'                    => 'follow',
+    'Thin wall'                  => 'follow',
+    'Bottom surface'             => 'nopurge',
+    'Bridge infill'              => 'nopurge',
+    'Custom'                     => 'nopurge',
+    'External perimeter'         => 'nopurge',
+    'Inner wall'                 => 'nopurge',
+    'Multiple'                   => 'nopurge',
+    'Outer wall'                 => 'nopurge',
+    'Overhang perimeter'         => 'nopurge',
+    'Overhang wall'              => 'nopurge',
+    'Perimeter'                  => 'nopurge',
+    'Solid infill'               => 'nopurge',
+    'Top solid infill'           => 'nopurge',
+    'Top surface'                => 'nopurge',
+    'Undefined'                  => 'nopurge',
+    'Unknown'                    => 'nopurge',
+    'Brim'                       => 'purge',
+    'Internal bridge infill'     => 'purge',
+    'Internal infill'            => 'purge',
+    'Prime tower'                => 'purge',
+    'Skirt'                      => 'purge',
+    'Skirt/Brim'                 => 'purge',
+    'Sparse infill'              => 'purge',
+    'Support'                    => 'purge',
+    'Support interface'          => 'purge',
+    'Support material'           => 'purge',
+    'Support material interface' => 'purge',
+    'Support transition'         => 'purge',
+    'Wipe tower'                 => 'purge'
+);
+
 our ( $current_block, $unretract_line ) = ( 0, 0 );
 our ( @lines_buffer,  @lines_array );
 
@@ -86,33 +120,37 @@ sub flag_type {
 
 # Subroutine to parse gcode lines and detect change of feature types
 sub handle_type_line {
-    my $i    = $_[0];
-    my $line = $lines[$i];
+    my $i           = $_[0];
+    my $line        = $lines[$i];
+    my ($line_type) = $line =~ /;TYPE:(.+)\n/;
+
     my ( $mark_new_block, $trigger_line ) = ( 0, 0 );
 
-    if ( $line =~ /^;TYPE:Support|^;TYPE:.*Internal.*infill|^;TYPE:Wipe tower/ )
-    {
-        # Supports, internal infill, and wipe tower marked as OK to purge into
-        $mark_new_block = flag_type("PURGE BLOCK");
-    }
-    elsif ( $line =~ /^;TYPE:Gap fill/ ) {
+    if ( exists( $entity_roles{$line_type} ) ) {
 
-        # Catch gap-fill moves so they stay with whatever feature
-        # type they follow
-    }
-    elsif ( $line =~ /^;TYPE.*Solid infill|^;TYPE.*erimeter|^;TYPE:/ ) {
+        if ( $entity_roles{$line_type} eq 'purge' ) {
 
-        # Solid infill, perimeters, and any other "TYPE" marked
-        # not OK to purge into
-        $mark_new_block = flag_type("NONPURGE BLOCK");
-    }
-    elsif ( $line =~ /^FILAMENT_CHANGE/ ) {
+          # Supports, internal infill, and wipe tower marked as OK to purge into
+            $mark_new_block = flag_type("PURGE BLOCK");
+        }
+        elsif ( $line =~ /^;TYPE:Gap fill/ ) {
 
-        # If we hit a FILAMENT_CHANGE macro, return this line number as a
-        # trigger to the pre-toolchange analysis
-        $trigger_line = $i;
-    }
+            # Catch gap-fill moves so they stay with whatever feature
+            # type they follow
+        }
+        elsif ( $line =~ /^;TYPE.*Solid infill|^;TYPE.*erimeter|^;TYPE:/ ) {
 
+            # Solid infill, perimeters, and any other "TYPE" marked
+            # not OK to purge into
+            $mark_new_block = flag_type("NONPURGE BLOCK");
+        }
+        elsif ( $line =~ /^FILAMENT_CHANGE/ ) {
+
+            # If we hit a FILAMENT_CHANGE macro, return this line number as a
+            # trigger to the pre-toolchange analysis
+            $trigger_line = $i;
+        }
+    }
     return ( $mark_new_block, $trigger_line );
 }
 

@@ -10,7 +10,7 @@ while ( my $line = <> ) {
     $line =~ tr/\#//d if ( $line =~ m/\bFILAMENT_COLOR_HEX\b/ );
 
     # If line contains a Z parameter, save the value
-    $z = $1 if $line =~ m/Z\s*(\d+(\.\d+)?)/;
+    $z = $1 if $line =~ m/Z\s*(\d*(\.\d+)?)/;
 
     # If the line starts with the FILAMENT_CHANGE macro, look ahead
     # until we find a travel move, then store the X and Y parameters
