@@ -37,27 +37,37 @@ my @lines = <$in>;
 close $in;
 
 my %entity_roles = (
-    'Gap fill'                   => 'follow',
-    'Ironing'                    => 'follow',
-    'Thin wall'                  => 'follow',
-    'Bottom surface'             => 'nopurge',
-    'Bridge infill'              => 'nopurge',
-    'Custom'                     => 'nopurge',
-    'External perimeter'         => 'nopurge',
-    'Inner wall'                 => 'nopurge',
-    'Multiple'                   => 'nopurge',
-    'Outer wall'                 => 'nopurge',
-    'Overhang perimeter'         => 'nopurge',
-    'Overhang wall'              => 'nopurge',
-    'Perimeter'                  => 'nopurge',
-    'Solid infill'               => 'nopurge',
-    'Top solid infill'           => 'nopurge',
-    'Top surface'                => 'nopurge',
-    'Undefined'                  => 'nopurge',
-    'Unknown'                    => 'nopurge',
+
+    # Catch gap-fill moves so they stay with whatever feature type they follow
+    'Gap fill'   => 'follow',
+    'Gap infill' => 'follow',
+    'Ironing'    => 'follow',
+    'Thin wall'  => 'follow',
+
+    # Solid infill, perimeters, and any other "TYPE" marked not OK to purge into
+    'Bottom surface'     => 'nopurge',
+    'Bridge'             => 'nopurge',
+    'Bridge infill'      => 'nopurge',
+    'Custom'             => 'nopurge',
+    'External perimeter' => 'nopurge',
+    'Inner wall'         => 'nopurge',
+    'Multiple'           => 'nopurge',
+    'Outer wall'         => 'nopurge',
+    'Overhang perimeter' => 'nopurge',
+    'Overhang wall'      => 'nopurge',
+    'Perimeter'          => 'nopurge',
+    'Solid infill'       => 'nopurge',
+    'Top solid infill'   => 'nopurge',
+    'Top surface'        => 'nopurge',
+    'Undefined'          => 'nopurge',
+    'Unknown'            => 'nopurge',
+
+    # Supports, internal infill, and wipe tower marked as OK to purge into
     'Brim'                       => 'purge',
     'Internal bridge infill'     => 'purge',
+    'Internal bridge'            => 'purge',
     'Internal infill'            => 'purge',
+    'Internal solid infill'      => 'purge',
     'Prime tower'                => 'purge',
     'Skirt'                      => 'purge',
     'Skirt/Brim'                 => 'purge',
@@ -107,7 +117,9 @@ sub is_extrusion_move {
 
 # Subroutine to determine whether new feature block is starting
 sub flag_type {
-    my $type           = $_[0];
+    my $type = $_[0];
+    return 0 if ( $type eq 'follow' );
+
     my $mark_new_block = 0;
 
     if ( $current_block ne $type ) {
@@ -124,34 +136,18 @@ sub handle_type_line {
     my $line        = $lines[$i];
     my ($line_type) = $line =~ /;TYPE:(.+)\n/;
 
-    my ( $mark_new_block, $trigger_line ) = ( 0, 0 );
+    if ( $line =~ /^FILAMENT_CHANGE/ ) {
 
-    if ( exists( $entity_roles{$line_type} ) ) {
-
-        if ( $entity_roles{$line_type} eq 'purge' ) {
-
-          # Supports, internal infill, and wipe tower marked as OK to purge into
-            $mark_new_block = flag_type("PURGE BLOCK");
-        }
-        elsif ( $line =~ /^;TYPE:Gap fill/ ) {
-
-            # Catch gap-fill moves so they stay with whatever feature
-            # type they follow
-        }
-        elsif ( $line =~ /^;TYPE.*Solid infill|^;TYPE.*erimeter|^;TYPE:/ ) {
-
-            # Solid infill, perimeters, and any other "TYPE" marked
-            # not OK to purge into
-            $mark_new_block = flag_type("NONPURGE BLOCK");
-        }
-        elsif ( $line =~ /^FILAMENT_CHANGE/ ) {
-
-            # If we hit a FILAMENT_CHANGE macro, return this line number as a
-            # trigger to the pre-toolchange analysis
-            $trigger_line = $i;
-        }
+        # If we hit a FILAMENT_CHANGE macro, return this line number as a
+        # trigger to the pre-toolchange analysis
+        return ( 0, $i );
     }
-    return ( $mark_new_block, $trigger_line );
+
+    if ( defined $line_type && exists $entity_roles{$line_type} ) {
+        return ( flag_type( $entity_roles{$line_type} ), 0 );
+    }
+
+    return ( 0, 0 );
 }
 
 # Subroutine to close out current line buffer and start a new one
@@ -190,7 +186,7 @@ sub start_new_line_buffer {
     @lines_buffer = splice(@temp_array);
 
     # Create a gcode comment at the beginning of the new lines buffer
-    # to identify it (e.g. ";PURGE BLOCK\n")
+    # to identify it (e.g. ";purge\n")
     unshift( @lines_buffer, ";${current_block}\n" );
 }
 
@@ -449,10 +445,10 @@ sub post_change_rearrange {
         if ( $id_line =~ /^;POST TOOLCHANGE/ ) {
             push( @intro_lines, [@this_array] );
         }
-        elsif ( $id_line =~ /^;PURGE BLOCK/ ) {
+        elsif ( $id_line =~ /^;purge/ ) {
             push( @purge_lines, [@this_array] );
         }
-        elsif ( $id_line =~ /^;NONPURGE BLOCK/ ) {
+        elsif ( $id_line =~ /^;nopurge/ ) {
             push( @nonpurge_lines, [@this_array] );
         }
     }
@@ -582,7 +578,7 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
     # block, update $pre_purge_line with the current line number. Otherwise
     # update $pre_nonpurge_line with the current line number.
     if ($mark_new_block) {
-        ( $current_block eq "PURGE BLOCK" )
+        ( $current_block eq "purge" )
           ? $pre_purge_line = $i
           : $pre_nonpurge_line = $i;
     }
@@ -638,7 +634,7 @@ for (@lines) {
     # stripped out all the ID tags we added along the way
     print $out $_
       unless (
-m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;PURGE BLOCK|^;NONPURGE BLOCK)/
+m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;purge|^;nopurge)/
       );
 }
 
