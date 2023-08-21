@@ -1,6 +1,7 @@
 #!/usr/bin/perl -i
 use strict;
 use warnings;
+use List::Util 'any';
 
 my $input_file = shift @ARGV;
 
@@ -229,11 +230,16 @@ sub append_purge_vol {
 # of a layer change
 sub get_post_range_end {
     my $range_end_line = 0;
+    my @range_end_patterns = (
+        '^;TOOLCHANGE',
+        '^;LAYER_CHANGE',
+        '^PRINT_END',
+        '^; stop printing object',
+        '^; Filament-specific end gcode'
+    );
+    
     for ( my $idx = ( $_[0] + 1 ) ; $idx <= $#lines ; $idx++ ) {
-        if ( $lines[$idx] =~
-m/^;TOOLCHANGE|^;LAYER_CHANGE|^PRINT_END|^; stop printing object|^; Filament-specific end gcode/
-          )
-        {
+        if ( any { $lines[$idx] =~ /$_/ } @range_end_patterns ) {
             $range_end_line = $idx;
             last;
         }
@@ -442,19 +448,22 @@ sub post_change_rearrange {
         # Depending on whether this array is the initial post-toolchange
         # gcode, a purge block, or a non-purge block, move the lines in this
         # array to the appropriate new array
-        if ( $id_line =~ /^;POST TOOLCHANGE/ ) {
-            push( @intro_lines, [@this_array] );
-        }
-        elsif ( $id_line =~ /^;purge/ ) {
-            push( @purge_lines, [@this_array] );
-        }
-        elsif ( $id_line =~ /^;nopurge/ ) {
-            push( @nonpurge_lines, [@this_array] );
+        my %line_groups = (
+            '^;POST TOOLCHANGE' => \@intro_lines,
+            '^;purge'           => \@purge_lines,
+            '^;nopurge'         => \@nonpurge_lines
+        );
+
+        foreach my $pattern ( keys %line_groups ) {
+            if ( $id_line =~ /$pattern/ ) {
+                push @{ $line_groups{$pattern} }, [@this_array];
+                last;   # Only one pattern should match, so we can exit the loop
+            }
         }
     }
 
     # If after all that there aren't any features we can purge into, bail out
-    # out now without rearranging anything
+    # now without rearranging anything
     return 0 if ( !@purge_lines );
 
     # Clear the lines array so we can put the sub-arrays back into it in the
@@ -634,8 +643,7 @@ for (@lines) {
     # stripped out all the ID tags we added along the way
     print $out $_
       unless (
-m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;purge|^;nopurge)/
-      );
+        m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;purge|^;nopurge)/);
 }
 
 close $out;
