@@ -196,10 +196,8 @@ sub start_new_line_buffer {
 sub total_extruded {
     my ( $start, $end ) = @_;
     my $sum = 0;
-    foreach my $idx ( $start .. $end ) {
-        if ( $lines[$idx] =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ ) {
-            $sum += $1;
-        }
+    for my $idx ( $start .. $end ) {
+        $sum += $1 if ( $lines[$idx] =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ );
     }
     return $sum;
 }
@@ -258,7 +256,7 @@ sub get_insertion_point {
     # coordinate but no E value (meaning it is a travel-only move) and set
     # $insertion_point to that line number. Then break the loop.
     if ( $current_operation eq 'pre' ) {
-        foreach ( my $idx = $start_index ; $idx >= 0 ; $idx-- ) {
+        for ( my $idx = $start_index ; $idx >= 0 ; $idx-- ) {
             if ( is_travel_move( $lines[$idx] ) ) {
                 $insertion_point = $idx;
                 last;
@@ -284,17 +282,11 @@ sub clean_up_retractions {
     my ( $extrusion_move, $retract_move, $unretract_move, $travel_move ) =
       ( 0, 0, 0, 0 );
 
-    foreach my $idx ( $filament_change_line .. scalar(@lines) ) {
-        if ( is_retract_move( $lines[$idx] ) ) {
-            $retract_move = $idx;
-        }
-        elsif ( is_unretract_move( $lines[$idx] ) ) {
-            $unretract_move = $idx;
-        }
-        elsif ( is_travel_move( $lines[$idx] ) ) {
-            $travel_move = $idx;
-        }
-        elsif ( is_extrusion_move( $lines[$idx] ) ) {
+    for my $idx ( $filament_change_line .. $#lines ) {
+        $retract_move   = $idx if is_retract_move( $lines[$idx] );
+        $unretract_move = $idx if is_unretract_move( $lines[$idx] );
+        $travel_move    = $idx if is_travel_move( $lines[$idx] );
+        if ( is_extrusion_move( $lines[$idx] ) ) {
             $extrusion_move = $idx;
             last;
         }
@@ -305,16 +297,15 @@ sub clean_up_retractions {
     # upon returning from the FILAMENT_CHANGE
     if ($retract_move) {
         splice( @lines, $retract_move, 1 );
-        $unretract_move -= 1 if $unretract_move;
-        $travel_move    -= 1 if $travel_move;
+        $unretract_move-- if $unretract_move;
+        $travel_move--    if $travel_move;
     }
 
     # If there's a travel move without an unretraction, add an unretraction
     # to make sure the nozzle is reprimed after returning from the
     # FILAMENT_CHANGE
-    if ( $travel_move && !$unretract_move ) {
-        splice( @lines, ( $travel_move + 1 ), 0, $unretract_line );
-    }
+    splice( @lines, $travel_move + 1, 0, $unretract_line )
+      if $travel_move && !$unretract_move;
 }
 
 # Subroutine to parse and rearrange the pre-toolchange gcode
@@ -333,7 +324,7 @@ sub pre_change_rearrange {
 
     # Start at the current FILAMENT_CHANGE macro line and begin parsing
     # each line working backwards
-    foreach ( my $idx = $end_index ; $idx >= 0 ; $idx-- ) {
+    for ( my $idx = $end_index ; $idx >= 0 ; $idx-- ) {
 
         # If the line begins with "; Filament-specific," this is the
         # beginning of the code block that immediately precedes the
@@ -347,7 +338,7 @@ sub pre_change_rearrange {
 
     # Start at the current FILAMENT_CHANGE macro line and begin parsing
     # each line working forward
-    foreach my $idx ( $end_index .. scalar(@lines) ) {
+    for my $idx ( $end_index .. scalar(@lines) ) {
 
         # If the line is a retraction move after the FILAMENT_CHANGE,
         # assume it is the retraction line after the toolchange
@@ -362,12 +353,10 @@ sub pre_change_rearrange {
 
     # Error handling. Kill the script with an error if we couldn't find
     # appropriate start and end points for moving the toolchange block.
-    if ( !defined $first_line_to_move ) {
-        die "Couldn't find filament-specific gcode tag. Exiting...";
-    }
-    if ( !defined $last_line_to_move ) {
-        die "Couldn't find post-toolchange retraction line. Exiting...";
-    }
+    die "Couldn't find filament-specific gcode tag. Exiting..."
+      unless defined $first_line_to_move;
+    die "Couldn't find post-toolchange retraction line. Exiting..."
+      unless defined $last_line_to_move;
 
     # Use get_insertion_point subroutine to find where to insert the
     # toolchange block. This should be the last travel-only move before
@@ -383,15 +372,13 @@ sub pre_change_rearrange {
     splice( @lines, $insertion_point, 0, @elements_to_move );
 
     my $filament_change_line;
-    foreach my $idx ( $insertion_point .. scalar(@lines) ) {
+    for my $idx ( $insertion_point .. scalar(@lines) ) {
         if ( $lines[$idx] =~ /^FILAMENT_CHANGE/ ) {
             $filament_change_line = $idx;
             last;
         }
     }
-
     clean_up_retractions($filament_change_line);
-
 }
 
 # Subroutine to parse and rearrange the post-toolchange gcode
@@ -454,7 +441,7 @@ sub post_change_rearrange {
             '^;nopurge'         => \@nonpurge_lines
         );
 
-        foreach my $pattern ( keys %line_groups ) {
+        for my $pattern ( keys %line_groups ) {
             if ( $id_line =~ /$pattern/ ) {
                 push @{ $line_groups{$pattern} }, [@this_array];
                 last;   # Only one pattern should match, so we can exit the loop
@@ -481,10 +468,8 @@ sub post_change_rearrange {
     # extrusion moves and then move each @purge_lines array to the new
     # @lines_array
     for my $each_array (@purge_lines) {
-        foreach my $purge_line (@$each_array) {
-            if ( $purge_line =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ ) {
-                $purge_total += $1;
-            }
+        for my $purge_line (@$each_array) {
+            $purge_total += $1 if $purge_line =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/;
         }
         push( @lines_array, [@$each_array] );
     }
@@ -535,7 +520,7 @@ sub post_change_rearrange {
 
         # After processing each sub-array in @lines_array, move all the lines to
         # the new @reordered_lines array
-        foreach my $element (@this_array) {
+        for my $element (@this_array) {
             push( @reordered_lines, $element );
         }
     }
@@ -571,9 +556,7 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
 
     # If we hit the PRINT_END macro, signal that this will be the last time
     # through the loop
-    if ( $line =~ /^PRINT_END/ ) {
-        last;
-    }
+    last if $line =~ /^PRINT_END/;
 
     # If the line is an unretract move, save it for later use
     $unretract_line = $line if ( is_unretract_move($line) );
