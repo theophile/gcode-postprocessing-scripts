@@ -37,6 +37,9 @@ seek( $in, 0, 0 );
 my @lines = <$in>;
 close $in;
 
+# Empty hash to store names of filaments used
+my %filament_list;
+
 my %entity_roles = (
 
     # Catch gap-fill moves so they stay with whatever feature type they follow
@@ -139,8 +142,15 @@ sub handle_type_line {
 
     if ( $line =~ /^FILAMENT_CHANGE/ ) {
 
-        # If we hit a FILAMENT_CHANGE macro, return this line number as a
-        # trigger to the pre-toolchange analysis
+        # If we hit a FILAMENT_CHANGE macro, find and store the filament 
+        # name...
+        if ($line =~ /FILAMENT_ID="([^"]+)"/) {
+            my $filament_name = $1;
+            $filament_list{$filament_name} = 1;
+        }
+
+        # ...and then return this line number as a trigger to the pre-
+        # toolchange analysis
         return ( 0, $i );
     }
 
@@ -617,15 +627,25 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
     }
 }
 
+# Create a comma-separated list of the names of filaments used in this print
+my $key_list = '';
+foreach my $key (keys %filament_list) {
+    $key_list .= ',' if $key_list ne '';
+    $key_list .= $key;
+}
+
 open my $out, '>', $input_file
   or die "Cannot open output file $input_file: $!";
 
-for (@lines) {
+for my $line (@lines) {
+
+    # Append the filament list to the PRINT_START command
+    $line =~ s/\n$/ FILAMENT_LIST="$key_list"\n/ if $line =~ /^PRINT_START/;
 
     # Write the rearranged lines back to the input file, making sure we've
     # stripped out all the ID tags we added along the way
-    print $out $_
-      unless (
+    print $out $line
+      unless ( $line =~
         m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;purge|^;nopurge)/);
 }
 
