@@ -1,6 +1,7 @@
 #!/usr/bin/perl -i
 use strict;
 use warnings;
+use List::Util 'any';
 
 my $input_file = shift @ARGV;
 
@@ -35,6 +36,53 @@ seek( $in, 0, 0 );
 # Read all lines into the @lines array
 my @lines = <$in>;
 close $in;
+
+# Empty hash to store names of filaments used
+my %filament_list;
+
+my %entity_roles = (
+
+    # Catch gap-fill moves so they stay with whatever feature type they follow
+    'Gap fill'   => 'follow',
+    'Gap infill' => 'follow',
+    'Ironing'    => 'follow',
+    'Thin wall'  => 'follow',
+
+    # Solid infill, perimeters, and any other "TYPE" marked not OK to purge into
+    'Bottom surface'        => 'nopurge',
+    'Bridge'                => 'nopurge',
+    'Bridge infill'         => 'nopurge',
+    'Custom'                => 'nopurge',
+    'External perimeter'    => 'nopurge',
+    'Inner wall'            => 'nopurge',
+    'Multiple'              => 'nopurge',
+    'Outer wall'            => 'nopurge',
+    'Overhang perimeter'    => 'nopurge',
+    'Overhang wall'         => 'nopurge',
+    'Perimeter'             => 'nopurge',
+    'Solid infill'          => 'nopurge',
+    'Internal solid infill' => 'nopurge',
+    'Top solid infill'      => 'nopurge',
+    'Top surface'           => 'nopurge',
+    'Undefined'             => 'nopurge',
+    'Unknown'               => 'nopurge',
+
+    # Supports, internal infill, and wipe tower marked as OK to purge into
+    'Brim'                       => 'purge',
+    'Internal bridge infill'     => 'purge',
+    'Internal bridge'            => 'purge',
+    'Internal infill'            => 'purge',
+    'Prime tower'                => 'purge',
+    'Skirt'                      => 'purge',
+    'Skirt/Brim'                 => 'purge',
+    'Sparse infill'              => 'purge',
+    'Support'                    => 'purge',
+    'Support interface'          => 'purge',
+    'Support material'           => 'purge',
+    'Support material interface' => 'purge',
+    'Support transition'         => 'purge',
+    'Wipe tower'                 => 'purge'
+);
 
 our ( $current_block, $unretract_line ) = ( 0, 0 );
 our ( @lines_buffer,  @lines_array );
@@ -73,7 +121,9 @@ sub is_extrusion_move {
 
 # Subroutine to determine whether new feature block is starting
 sub flag_type {
-    my $type           = $_[0];
+    my $type = $_[0];
+    return 0 if ( $type eq 'follow' );
+
     my $mark_new_block = 0;
 
     if ( $current_block ne $type ) {
@@ -86,34 +136,29 @@ sub flag_type {
 
 # Subroutine to parse gcode lines and detect change of feature types
 sub handle_type_line {
-    my $i    = $_[0];
-    my $line = $lines[$i];
-    my ( $mark_new_block, $trigger_line ) = ( 0, 0 );
+    my $i           = $_[0];
+    my $line        = $lines[$i];
+    my ($line_type) = $line =~ /;TYPE:(.+)\n/;
 
-    if ( $line =~ /^;TYPE:Support|^;TYPE:.*Internal.*infill|^;TYPE:Wipe tower/ )
-    {
-        # Supports, internal infill, and wipe tower marked as OK to purge into
-        $mark_new_block = flag_type("PURGE BLOCK");
-    }
-    elsif ( $line =~ /^;TYPE:Gap fill/ ) {
+    if ( $line =~ /^FILAMENT_CHANGE/ ) {
 
-        # Catch gap-fill moves so they stay with whatever feature
-        # type they follow
-    }
-    elsif ( $line =~ /^;TYPE.*Solid infill|^;TYPE.*erimeter|^;TYPE:/ ) {
+        # If we hit a FILAMENT_CHANGE macro, find and store the filament 
+        # name...
+        if ($line =~ /FILAMENT_ID="([^"]+)"/) {
+            my $filament_name = $1;
+            $filament_list{$filament_name} = 1;
+        }
 
-        # Solid infill, perimeters, and any other "TYPE" marked
-        # not OK to purge into
-        $mark_new_block = flag_type("NONPURGE BLOCK");
-    }
-    elsif ( $line =~ /^FILAMENT_CHANGE/ ) {
-
-        # If we hit a FILAMENT_CHANGE macro, return this line number as a
-        # trigger to the pre-toolchange analysis
-        $trigger_line = $i;
+        # ...and then return this line number as a trigger to the pre-
+        # toolchange analysis
+        return ( 0, $i );
     }
 
-    return ( $mark_new_block, $trigger_line );
+    if ( defined $line_type && exists $entity_roles{$line_type} ) {
+        return ( flag_type( $entity_roles{$line_type} ), 0 );
+    }
+
+    return ( 0, 0 );
 }
 
 # Subroutine to close out current line buffer and start a new one
@@ -152,7 +197,7 @@ sub start_new_line_buffer {
     @lines_buffer = splice(@temp_array);
 
     # Create a gcode comment at the beginning of the new lines buffer
-    # to identify it (e.g. ";PURGE BLOCK\n")
+    # to identify it (e.g. ";purge\n")
     unshift( @lines_buffer, ";${current_block}\n" );
 }
 
@@ -161,10 +206,8 @@ sub start_new_line_buffer {
 sub total_extruded {
     my ( $start, $end ) = @_;
     my $sum = 0;
-    foreach my $idx ( $start .. $end ) {
-        if ( $lines[$idx] =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ ) {
-            $sum += $1;
-        }
+    for my $idx ( $start .. $end ) {
+        $sum += $1 if ( $lines[$idx] =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ );
     }
     return $sum;
 }
@@ -195,11 +238,16 @@ sub append_purge_vol {
 # of a layer change
 sub get_post_range_end {
     my $range_end_line = 0;
+    my @range_end_patterns = (
+        '^;TOOLCHANGE',
+        '^;LAYER_CHANGE',
+        '^PRINT_END',
+        '^; stop printing object',
+        '^; Filament-specific end gcode'
+    );
+    
     for ( my $idx = ( $_[0] + 1 ) ; $idx <= $#lines ; $idx++ ) {
-        if ( $lines[$idx] =~
-m/^;TOOLCHANGE|^;LAYER_CHANGE|^PRINT_END|^; stop printing object|^; Filament-specific end gcode/
-          )
-        {
+        if ( any { $lines[$idx] =~ /$_/ } @range_end_patterns ) {
             $range_end_line = $idx;
             last;
         }
@@ -218,7 +266,7 @@ sub get_insertion_point {
     # coordinate but no E value (meaning it is a travel-only move) and set
     # $insertion_point to that line number. Then break the loop.
     if ( $current_operation eq 'pre' ) {
-        foreach ( my $idx = $start_index ; $idx >= 0 ; $idx-- ) {
+        for ( my $idx = $start_index ; $idx >= 0 ; $idx-- ) {
             if ( is_travel_move( $lines[$idx] ) ) {
                 $insertion_point = $idx;
                 last;
@@ -244,17 +292,11 @@ sub clean_up_retractions {
     my ( $extrusion_move, $retract_move, $unretract_move, $travel_move ) =
       ( 0, 0, 0, 0 );
 
-    foreach my $idx ( $filament_change_line .. scalar(@lines) ) {
-        if ( is_retract_move( $lines[$idx] ) ) {
-            $retract_move = $idx;
-        }
-        elsif ( is_unretract_move( $lines[$idx] ) ) {
-            $unretract_move = $idx;
-        }
-        elsif ( is_travel_move( $lines[$idx] ) ) {
-            $travel_move = $idx;
-        }
-        elsif ( is_extrusion_move( $lines[$idx] ) ) {
+    for my $idx ( $filament_change_line .. $#lines ) {
+        $retract_move   = $idx if is_retract_move( $lines[$idx] );
+        $unretract_move = $idx if is_unretract_move( $lines[$idx] );
+        $travel_move    = $idx if is_travel_move( $lines[$idx] );
+        if ( is_extrusion_move( $lines[$idx] ) ) {
             $extrusion_move = $idx;
             last;
         }
@@ -265,16 +307,15 @@ sub clean_up_retractions {
     # upon returning from the FILAMENT_CHANGE
     if ($retract_move) {
         splice( @lines, $retract_move, 1 );
-        $unretract_move -= 1 if $unretract_move;
-        $travel_move    -= 1 if $travel_move;
+        $unretract_move-- if $unretract_move;
+        $travel_move--    if $travel_move;
     }
 
     # If there's a travel move without an unretraction, add an unretraction
     # to make sure the nozzle is reprimed after returning from the
     # FILAMENT_CHANGE
-    if ( $travel_move && !$unretract_move ) {
-        splice( @lines, ( $travel_move + 1 ), 0, $unretract_line );
-    }
+    splice( @lines, $travel_move + 1, 0, $unretract_line )
+      if $travel_move && !$unretract_move;
 }
 
 # Subroutine to parse and rearrange the pre-toolchange gcode
@@ -293,7 +334,7 @@ sub pre_change_rearrange {
 
     # Start at the current FILAMENT_CHANGE macro line and begin parsing
     # each line working backwards
-    foreach ( my $idx = $end_index ; $idx >= 0 ; $idx-- ) {
+    for ( my $idx = $end_index ; $idx >= 0 ; $idx-- ) {
 
         # If the line begins with "; Filament-specific," this is the
         # beginning of the code block that immediately precedes the
@@ -307,7 +348,7 @@ sub pre_change_rearrange {
 
     # Start at the current FILAMENT_CHANGE macro line and begin parsing
     # each line working forward
-    foreach my $idx ( $end_index .. scalar(@lines) ) {
+    for my $idx ( $end_index .. scalar(@lines) ) {
 
         # If the line is a retraction move after the FILAMENT_CHANGE,
         # assume it is the retraction line after the toolchange
@@ -322,12 +363,10 @@ sub pre_change_rearrange {
 
     # Error handling. Kill the script with an error if we couldn't find
     # appropriate start and end points for moving the toolchange block.
-    if ( !defined $first_line_to_move ) {
-        die "Couldn't find filament-specific gcode tag. Exiting...";
-    }
-    if ( !defined $last_line_to_move ) {
-        die "Couldn't find post-toolchange retraction line. Exiting...";
-    }
+    die "Couldn't find filament-specific gcode tag. Exiting..."
+      unless defined $first_line_to_move;
+    die "Couldn't find post-toolchange retraction line. Exiting..."
+      unless defined $last_line_to_move;
 
     # Use get_insertion_point subroutine to find where to insert the
     # toolchange block. This should be the last travel-only move before
@@ -343,15 +382,13 @@ sub pre_change_rearrange {
     splice( @lines, $insertion_point, 0, @elements_to_move );
 
     my $filament_change_line;
-    foreach my $idx ( $insertion_point .. scalar(@lines) ) {
+    for my $idx ( $insertion_point .. scalar(@lines) ) {
         if ( $lines[$idx] =~ /^FILAMENT_CHANGE/ ) {
             $filament_change_line = $idx;
             last;
         }
     }
-
     clean_up_retractions($filament_change_line);
-
 }
 
 # Subroutine to parse and rearrange the post-toolchange gcode
@@ -408,19 +445,22 @@ sub post_change_rearrange {
         # Depending on whether this array is the initial post-toolchange
         # gcode, a purge block, or a non-purge block, move the lines in this
         # array to the appropriate new array
-        if ( $id_line =~ /^;POST TOOLCHANGE/ ) {
-            push( @intro_lines, [@this_array] );
-        }
-        elsif ( $id_line =~ /^;PURGE BLOCK/ ) {
-            push( @purge_lines, [@this_array] );
-        }
-        elsif ( $id_line =~ /^;NONPURGE BLOCK/ ) {
-            push( @nonpurge_lines, [@this_array] );
+        my %line_groups = (
+            '^;POST TOOLCHANGE' => \@intro_lines,
+            '^;purge'           => \@purge_lines,
+            '^;nopurge'         => \@nonpurge_lines
+        );
+
+        for my $pattern ( keys %line_groups ) {
+            if ( $id_line =~ /$pattern/ ) {
+                push @{ $line_groups{$pattern} }, [@this_array];
+                last;   # Only one pattern should match, so we can exit the loop
+            }
         }
     }
 
     # If after all that there aren't any features we can purge into, bail out
-    # out now without rearranging anything
+    # now without rearranging anything
     return 0 if ( !@purge_lines );
 
     # Clear the lines array so we can put the sub-arrays back into it in the
@@ -438,10 +478,8 @@ sub post_change_rearrange {
     # extrusion moves and then move each @purge_lines array to the new
     # @lines_array
     for my $each_array (@purge_lines) {
-        foreach my $purge_line (@$each_array) {
-            if ( $purge_line =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/ ) {
-                $purge_total += $1;
-            }
+        for my $purge_line (@$each_array) {
+            $purge_total += $1 if $purge_line =~ /^G1.*?E(-?[0-9]*(?:\.\d+)?)/;
         }
         push( @lines_array, [@$each_array] );
     }
@@ -492,7 +530,7 @@ sub post_change_rearrange {
 
         # After processing each sub-array in @lines_array, move all the lines to
         # the new @reordered_lines array
-        foreach my $element (@this_array) {
+        for my $element (@this_array) {
             push( @reordered_lines, $element );
         }
     }
@@ -528,9 +566,7 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
 
     # If we hit the PRINT_END macro, signal that this will be the last time
     # through the loop
-    if ( $line =~ /^PRINT_END/ ) {
-        last;
-    }
+    last if $line =~ /^PRINT_END/;
 
     # If the line is an unretract move, save it for later use
     $unretract_line = $line if ( is_unretract_move($line) );
@@ -544,7 +580,7 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
     # block, update $pre_purge_line with the current line number. Otherwise
     # update $pre_nonpurge_line with the current line number.
     if ($mark_new_block) {
-        ( $current_block eq "PURGE BLOCK" )
+        ( $current_block eq "purge" )
           ? $pre_purge_line = $i
           : $pre_nonpurge_line = $i;
     }
@@ -591,17 +627,26 @@ for ( my $i = 0 ; $i <= $#lines ; $i++ ) {
     }
 }
 
+# Create a comma-separated list of the names of filaments used in this print
+my $key_list = '';
+foreach my $key (keys %filament_list) {
+    $key_list .= ',' if $key_list ne '';
+    $key_list .= $key;
+}
+
 open my $out, '>', $input_file
   or die "Cannot open output file $input_file: $!";
 
-for (@lines) {
+for my $line (@lines) {
+
+    # Append the filament list to the PRINT_START command
+    $line =~ s/\n$/ FILAMENT_LIST="$key_list"\n/ if $line =~ /^PRINT_START/;
 
     # Write the rearranged lines back to the input file, making sure we've
     # stripped out all the ID tags we added along the way
-    print $out $_
-      unless (
-m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;PURGE BLOCK|^;NONPURGE BLOCK)/
-      );
+    print $out $line
+      unless ( $line =~
+        m/(^;NOT RETRACTED|^;RETRACTED|^;POST TOOLCHANGE|^;purge|^;nopurge)/);
 }
 
 close $out;
